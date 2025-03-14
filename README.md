@@ -1,6 +1,8 @@
 # Spectral Image Steganography
 
-A Python tool that hides images within audio spectrograms using stereo phase encoding.
+A Python tool that hides images within audio spectrograms using stereo phase encoding. 
+
+[NEW Update!](#update)   
 
 [<img src="misc/stereo.jpg" alt="Dithered Sample" width="700" />](## "Stereo spectrogram shows normal audio patterns") 
 [<img src="misc/mono.jpg" alt="Dithered Sample" width="700" />](## "When collapsed to mono, the hidden image appears")  
@@ -92,3 +94,8 @@ The tool produces:
 - Data hiding for creative projects
 - Audio easter eggs
 
+## Update
+
+Added a visible stereo mode that lets you make watermarks directly visible in the spectrogram without needing to collapse to mono first. The standard mode still hides images until channels are combined, but with the new `-V` flag, images show up clearly in both stereo and mono. You probably need to crank up intensity in some cases. Great for art projects or when you actually want people to see your watermark. Just add `-V` to your command:   
+
+```python monomark.py -a input.wav -i logo.png -V```
