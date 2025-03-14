@@ -13,7 +13,7 @@ import argparse
 # DEFAULT SETTINGS (can be overridden via CLI)
 # ========================
 AUDIO_PATH = "input_audio.wav"    # Path to input audio file
-IMAGE_PATH = "input_image.png"   # Path to input image file
+IMAGE_PATH = "input_image.png"    # Path to input image file
 OUTPUT_FOLDER = "output"          # Folder to save outputs
 START_TIME = 10.0                 # Start time (s) for embedding the image
 DURATION = 2.0                    # Duration (s) for image embedding (ignored if auto-duration is enabled)
@@ -31,6 +31,9 @@ COMPENSATE_LOG_SCALE = True       # Pre-distort image for logarithmic frequency 
 PRESERVE_ASPECT_RATIO = True      # Preserve the image's original aspect ratio when resizing
 AUTO_DURATION = True              # Automatically calculate embedding duration based on image aspect ratio
 IMAGE_INTENSITY = 1.0             # Intensity of the image effect (0.0-1.0)
+
+# New setting for visible stereo mode
+VISIBLE_IN_STEREO = False         # Make image visible in stereo spectrograms too
 
 # Spectrogram visualization settings
 SPEC_MIN_FREQ = None              # Minimum frequency to display in spectrogram (Hz)
@@ -251,8 +254,10 @@ def resize_image_to_spectrogram(image, target_shape, min_freq=None, max_freq=Non
 
 def embed_image_in_stereo(audio, sr, image, start_time, duration, n_fft=FFT_SIZE, hop_length=HOP_LENGTH):
     """
-    Embed an image into stereo audio so that it is hidden in the stereo spectrogram
-    but appears clearly in the mono version.
+    Embed an image into stereo audio.
+    
+    In default mode (VISIBLE_IN_STEREO=False), the image is hidden in stereo but visible in mono.
+    In visible mode (VISIBLE_IN_STEREO=True), the image is directly visible in both stereo and mono.
     """
     print(f"Embedding image at {start_time}s for {duration}s duration")
     start_sample = int(start_time * sr)
@@ -283,23 +288,51 @@ def embed_image_in_stereo(audio, sr, image, start_time, duration, n_fft=FFT_SIZE
     resized_image = resize_image_to_spectrogram(image, target_shape, freqs[min_bin], freqs[max_bin])
     stft_left_new = stft_left.copy()
     stft_right_new = stft_right.copy()
-    np.random.seed(42)
-    for i in range(freq_range):
-        freq_bin = i + min_bin
-        for j in range(num_frames):
-            img_val = resized_image[i, j]
-            mag_orig = (np.abs(stft_left[freq_bin, j]) + np.abs(stft_right[freq_bin, j])) / 2
-            base_phase = np.random.random() * 2 * np.pi
-            full_phase_diff = np.pi * (1 - img_val)
-            if IMAGE_INTENSITY >= 1.0:
-                phase_diff = full_phase_diff
-                mag_boost = 1.5
-            else:
-                min_phase_diff = full_phase_diff * 0.7
-                phase_diff = min_phase_diff + (full_phase_diff - min_phase_diff) * IMAGE_INTENSITY
-                mag_boost = 1.0 + (0.5 * IMAGE_INTENSITY)
-            stft_left_new[freq_bin, j] = mag_orig * mag_boost * np.exp(1j * base_phase)
-            stft_right_new[freq_bin, j] = mag_orig * mag_boost * np.exp(1j * (base_phase + phase_diff))
+    
+    if VISIBLE_IN_STEREO:
+        print("Using VISIBLE_IN_STEREO mode: image will be visible in stereo spectrograms")
+        # Direct embedding in magnitude for both channels
+        for i in range(freq_range):
+            freq_bin = i + min_bin
+            for j in range(num_frames):
+                img_val = resized_image[i, j]
+                phase_left = np.angle(stft_left[freq_bin, j])
+                phase_right = np.angle(stft_right[freq_bin, j])
+                
+                # Calculate original magnitudes
+                mag_left = np.abs(stft_left[freq_bin, j])
+                mag_right = np.abs(stft_right[freq_bin, j])
+                
+                # Base magnitude adjustment (higher for brighter pixels)
+                mag_factor = 1.0 + (img_val * IMAGE_INTENSITY * 2.0)
+                
+                # Apply magnitude adjustments to both channels
+                new_mag_left = mag_left * mag_factor
+                new_mag_right = mag_right * mag_factor
+                
+                # Keep original phases
+                stft_left_new[freq_bin, j] = new_mag_left * np.exp(1j * phase_left)
+                stft_right_new[freq_bin, j] = new_mag_right * np.exp(1j * phase_right)
+    else:
+        print("Using default hidden mode: image will only be visible when collapsed to mono")
+        np.random.seed(42)
+        for i in range(freq_range):
+            freq_bin = i + min_bin
+            for j in range(num_frames):
+                img_val = resized_image[i, j]
+                mag_orig = (np.abs(stft_left[freq_bin, j]) + np.abs(stft_right[freq_bin, j])) / 2
+                base_phase = np.random.random() * 2 * np.pi
+                full_phase_diff = np.pi * (1 - img_val)
+                if IMAGE_INTENSITY >= 1.0:
+                    phase_diff = full_phase_diff
+                    mag_boost = 1.5
+                else:
+                    min_phase_diff = full_phase_diff * 0.7
+                    phase_diff = min_phase_diff + (full_phase_diff - min_phase_diff) * IMAGE_INTENSITY
+                    mag_boost = 1.0 + (0.5 * IMAGE_INTENSITY)
+                stft_left_new[freq_bin, j] = mag_orig * mag_boost * np.exp(1j * base_phase)
+                stft_right_new[freq_bin, j] = mag_orig * mag_boost * np.exp(1j * (base_phase + phase_diff))
+                
     audio_left_new = librosa.istft(stft_left_new, hop_length=hop_length, length=len(audio_section[0]))
     audio_right_new = librosa.istft(stft_right_new, hop_length=hop_length, length=len(audio_section[1]))
     max_val = max(np.max(np.abs(audio_left_new)), np.max(np.abs(audio_right_new)))
@@ -323,6 +356,7 @@ def main():
         image = load_image(IMAGE_PATH)
         print(f"Audio: {audio.shape} channels, {sr} Hz sample rate, {audio.shape[1]/sr:.2f} seconds")
         print(f"Image: {image.shape[0]}x{image.shape[1]} pixels")
+        print(f"Embedding mode: {'VISIBLE in stereo' if VISIBLE_IN_STEREO else 'HIDDEN until mono collapse'}")
         global DURATION
         if AUTO_DURATION:
             DURATION = calculate_auto_duration(image, MIN_FREQ, MAX_FREQ, sr, HOP_LENGTH)
@@ -429,6 +463,10 @@ if __name__ == "__main__":
                         action="store_false", help="Do not zoom spectrogram display to the image area.")
     parser.set_defaults(zoom_to_image=ZOOM_TO_IMAGE)
     
+    # New option for visible stereo mode - single flag to explicitly enable
+    parser.add_argument("-V", "--visible-stereo", dest="visible_in_stereo",
+                        action="store_true", help="Make image visible in stereo spectrograms too (not just in mono).")
+    
     args = parser.parse_args()
     
     # Override globals with CLI arguments.
@@ -454,7 +492,8 @@ if __name__ == "__main__":
         "SPEC_MAX_FREQ": args.spec_max_freq,
         "SPEC_START_TIME": args.spec_start,
         "SPEC_END_TIME": args.spec_end,
-        "ZOOM_TO_IMAGE": args.zoom_to_image
+        "ZOOM_TO_IMAGE": args.zoom_to_image,
+        "VISIBLE_IN_STEREO": args.visible_in_stereo
     })
     
     if not os.path.exists(OUTPUT_FOLDER):
